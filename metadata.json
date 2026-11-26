@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "Analisis Nilai PG & Esai - SMP Negeri 7 Sentani",
+  "description": "Aplikasi analisis hasil tes Pilihan Ganda dan Esai dengan pembobotan otomatis, KKM, predikat D-A, dan ekspor laporan wali kelas untuk SMP Negeri 7 Sentani.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
