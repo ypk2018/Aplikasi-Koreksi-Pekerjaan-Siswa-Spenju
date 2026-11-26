@@ -19,6 +19,14 @@ interface Student {
   essayScores: number[];
 }
 
+interface ClassArchive {
+  id: string;
+  archiveName: string;
+  config: TestConfig;
+  students: Student[];
+  updatedAt: string;
+}
+
 type WeightScheme = 'es60_pg40' | 'es70_pg30' | 'pg60_es40' | 'pg70_es30';
 
 interface TestConfig {
@@ -78,6 +86,10 @@ const DEFAULT_CONFIG: TestConfig = {
 };
 
 const sanitizePgLetters = (val: string) => val.replace(/[^a-dA-D]/g, '');
+const sanitizeStudentPg = (val: string, maxLen: number) => {
+  const cleaned = val.replace(/[^a-dA-D\s]/g, '');
+  return maxLen > 0 ? cleaned.slice(0, maxLen) : cleaned;
+};
 
 const INITIAL_STUDENTS: Student[] = [];
 
@@ -88,11 +100,12 @@ export default function App() {
       try {
         const parsed = JSON.parse(saved);
         const cleanKey = sanitizePgLetters(parsed?.pgKey || '');
+        const count = parsed?.pgKey !== undefined ? cleanKey.length : Math.max(0, Math.min(100, Number(parsed?.pgCount) || 0));
         return {
           ...DEFAULT_CONFIG,
           ...parsed,
           pgKey: cleanKey,
-          pgCount: parsed?.pgKey !== undefined ? cleanKey.length : Math.max(0, Math.min(100, Number(parsed?.pgCount) || 0)),
+          pgCount: count,
           weightScheme: normalizeWeightScheme(parsed?.weightScheme),
         };
       } catch {
@@ -110,7 +123,7 @@ export default function App() {
         if (Array.isArray(parsed)) {
           return parsed.map((s: Student) => ({
             ...s,
-            pgAnswers: sanitizePgLetters(s.pgAnswers || ''),
+            pgAnswers: sanitizeStudentPg(s.pgAnswers || '', config.pgCount),
           }));
         }
       } catch {
@@ -123,6 +136,19 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'settings' | 'input' | 'analysis' | 'soal'>('settings');
   const [status, setStatus] = useState('');
 
+  const [classArchives, setClassArchives] = useState<ClassArchive[]>(() => {
+    const saved = localStorage.getItem('smp7_class_archives_v2');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+
   useEffect(() => {
     localStorage.setItem('smp7_config_v6', JSON.stringify(config));
   }, [config]);
@@ -130,6 +156,73 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('smp7_students_v6', JSON.stringify(students));
   }, [students]);
+
+  useEffect(() => {
+    localStorage.setItem('smp7_class_archives_v2', JSON.stringify(classArchives));
+  }, [classArchives]);
+
+  const handleSaveArchive = () => {
+    const defaultName = config.className ? `Kelas ${config.className} - ${config.subject || config.testName || 'Ujian'}` : `Arsip Kelas ${Date.now()}`;
+    const nameInput = prompt("Masukkan nama arsip/kelas untuk disimpan:", defaultName);
+    if (!nameInput) return;
+
+    const newArchive: ClassArchive = {
+      id: Date.now().toString(),
+      archiveName: nameInput,
+      config,
+      students,
+      updatedAt: new Date().toLocaleString('id-ID')
+    };
+
+    const existingIndex = classArchives.findIndex(a => a.archiveName.toLowerCase() === nameInput.toLowerCase());
+    if (existingIndex >= 0) {
+      const updated = [...classArchives];
+      updated[existingIndex] = newArchive;
+      setClassArchives(updated);
+    } else {
+      setClassArchives([...classArchives, newArchive]);
+    }
+    setStatus(`Berhasil menyimpan arsip kelas "${nameInput}"!`);
+    setTimeout(() => setStatus(''), 3000);
+  };
+
+  const handleLoadArchive = (id: string) => {
+    const archive = classArchives.find(a => a.id === id);
+    if (!archive) return;
+    if (confirm(`Muat data arsip "${archive.archiveName}"? Data kelas saat ini akan digantikan dengan arsip ini.`)) {
+      setConfig(archive.config);
+      setStudents(archive.students || []);
+      setStatus(`Arsip kelas "${archive.archiveName}" berhasil dimuat!`);
+      setTimeout(() => setStatus(''), 3000);
+    }
+  };
+
+  const handleDeleteArchive = (id: string) => {
+    const archive = classArchives.find(a => a.id === id);
+    if (!archive) return;
+    if (confirm(`Hapus arsip "${archive.archiveName}" dari daftar tersimpan?`)) {
+      setClassArchives(classArchives.filter(a => a.id !== id));
+      setStatus(`Arsip "${archive.archiveName}" berhasil dihapus.`);
+      setTimeout(() => setStatus(''), 3000);
+    }
+  };
+
+  const handleDuplicateForNewClass = () => {
+    const newClassName = prompt("Masukkan nama kelas baru (misal: IX.2, IX.3, VII.B):", "");
+    if (!newClassName) return;
+
+    const newConfig = { ...config, className: newClassName };
+    const resetStudents = students.map(s => ({
+      ...s,
+      pgAnswers: '',
+      essayScores: Array(config.essayCount).fill(0)
+    }));
+
+    setConfig(newConfig);
+    setStudents(resetStudents);
+    setStatus(`Berhasil menduplikasi kunci jawaban & soal untuk Kelas ${newClassName}! Silakan sesuaikan nama siswa.`);
+    setTimeout(() => setStatus(''), 4000);
+  };
 
   // Adjust PG key length when pgCount changes (only A-D / a-d)
   const handlePgCountChange = (newCount: number) => {
@@ -206,13 +299,19 @@ export default function App() {
   const calculatedStudents = students.map(student => {
     let pgCorrect = 0;
     let pgWrong = 0;
-    const ans = sanitizePgLetters(student.pgAnswers || '').toUpperCase().padEnd(config.pgCount, ' ');
+    const ans = (student.pgAnswers || '').toUpperCase().padEnd(config.pgCount, ' ');
     const key = sanitizePgLetters(config.pgKey).toUpperCase().padEnd(config.pgCount, ' ');
 
     for (let i = 0; i < config.pgCount; i++) {
-      if (ans[i].trim() !== '' && key[i].trim() !== '') {
-        if (ans[i] === key[i]) pgCorrect++;
-        else pgWrong++;
+      const ansChar = ans[i] || ' ';
+      const keyChar = key[i] || ' ';
+      if (keyChar.trim() !== '') {
+        if (ansChar !== ' ' && ansChar.trim() !== '') {
+          if (ansChar === keyChar) pgCorrect++;
+          else pgWrong++;
+        } else {
+          pgWrong++;
+        }
       }
     }
 
@@ -709,17 +808,19 @@ export default function App() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                           <label className="text-xs font-semibold text-slate-600 block mb-1">
-                            Jawaban PG (Hanya A-D / a-d • {s.pgAnswers.length}/{config.pgCount}) — Benar: {s.pgCorrect} poin ({s.pgEarnedPct.toFixed(1)}%):
+                            Jawaban PG (A-D / Spasi untuk kosong • {s.pgAnswers.length}/{config.pgCount}) — Benar: {s.pgCorrect} poin ({s.pgEarnedPct.toFixed(1)}%):
                           </label>
                           <input
                             type="text"
+                            maxLength={config.pgCount > 0 ? config.pgCount : undefined}
                             value={s.pgAnswers}
                             onChange={e => {
-                              const filtered = sanitizePgLetters(e.target.value);
+                              const filtered = sanitizeStudentPg(e.target.value, config.pgCount);
                               setStudents(students.map(st => st.id === s.id ? { ...st, pgAnswers: filtered } : st));
                             }}
                             className="w-full px-3 py-1.5 border rounded-lg text-sm font-mono bg-white"
-                            placeholder="Hanya A-D atau a-d (cth: abcd / ABCD)"
+                            placeholder={config.pgCount > 0 ? `Max ${config.pgCount} karakter (gunakan spasi untuk lompat/kosong)` : `Atur kunci PG di Pengaturan`}
+                            disabled={config.pgCount === 0}
                           />
                         </div>
                         <div>
@@ -797,8 +898,9 @@ export default function App() {
                         const keyCharUpper = cleanKeyChar.toUpperCase();
                         let correct = 0;
                         calculatedStudents.forEach(s => {
-                          const cleanAnsChar = sanitizePgLetters(s.pgAnswers[qIdx] || '').toUpperCase();
-                          if (cleanKeyChar !== '-' && cleanAnsChar === keyCharUpper) correct++;
+                          const ansStr = (s.pgAnswers || '').toUpperCase().padEnd(config.pgCount, ' ');
+                          const ansChar = ansStr[qIdx] || ' ';
+                          if (cleanKeyChar !== '-' && ansChar !== ' ' && ansChar === keyCharUpper) correct++;
                         });
                         const pct = totalStudents > 0 ? (correct / totalStudents) * 100 : 0;
                         return (
@@ -866,8 +968,74 @@ export default function App() {
         )}
 
         {activeTab === 'settings' && (
-          <div className="bg-white rounded-2xl shadow-sm border p-6 space-y-6">
-            <h3 className="font-bold text-lg text-slate-800">Pengaturan Sekolah, Guru, Kunci & Soal Esai</h3>
+          <div className="space-y-6">
+            {/* Multi-Class Archive Manager Card */}
+            <div className="bg-gradient-to-r from-emerald-800 to-teal-900 text-white rounded-2xl shadow-md p-6 space-y-4">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                  <span className="text-xs uppercase bg-emerald-700 px-2 py-0.5 rounded text-emerald-200 font-semibold">
+                    Manajemen Multi-Kelas & Arsip
+                  </span>
+                  <h3 className="text-lg font-bold mt-1">Simpan & Berpindah Antar Kelas (Cocok untuk Guru Banyak Kelas)</h3>
+                  <p className="text-xs text-emerald-100 mt-1 max-w-2xl">
+                    Simpan pekerjaan siswa per kelas ke memori browser, muat kelas lain kapan saja, atau duplikasi kunci jawaban & bobot soal ke kelas baru (misal: IX.1 ke IX.2) tanpa mengetik ulang.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={handleSaveArchive}
+                    className="px-4 py-2 bg-yellow-400 hover:bg-yellow-300 text-slate-900 rounded-xl text-sm font-bold flex items-center gap-2 shadow"
+                  >
+                    <Save className="w-4 h-4" /> Simpan Kelas Ini
+                  </button>
+                  <button
+                    onClick={handleDuplicateForNewClass}
+                    className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl text-sm font-semibold flex items-center gap-2 shadow border border-emerald-600"
+                  >
+                    <Plus className="w-4 h-4" /> Duplikasi untuk Kelas Lain
+                  </button>
+                </div>
+              </div>
+
+              {classArchives.length > 0 && (
+                <div className="border-t border-emerald-700/60 pt-4 space-y-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-emerald-200 block">
+                    Daftar Kelas Tersimpan ({classArchives.length} Arsip):
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    {classArchives.map(arch => (
+                      <div key={arch.id} className="bg-emerald-950/60 border border-emerald-700/60 rounded-xl p-3 flex flex-col justify-between gap-2">
+                        <div>
+                          <strong className="text-sm text-white block truncate">{arch.archiveName}</strong>
+                          <span className="text-[11px] text-emerald-300 block">
+                            Mapel: {arch.config.subject || '-'} | Kelas: {arch.config.className || '-'} ({arch.students?.length || 0} siswa)
+                          </span>
+                          <span className="text-[10px] text-emerald-400 block mt-0.5">Disimpan: {arch.updatedAt}</span>
+                        </div>
+                        <div className="flex items-center gap-2 pt-1 border-t border-emerald-800">
+                          <button
+                            onClick={() => handleLoadArchive(arch.id)}
+                            className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium text-center transition shadow"
+                          >
+                            Muat Kelas
+                          </button>
+                          <button
+                            onClick={() => handleDeleteArchive(arch.id)}
+                            className="p-1.5 text-rose-300 hover:text-white hover:bg-rose-600/60 rounded-lg transition"
+                            title="Hapus Arsip"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-2xl shadow-sm border p-6 space-y-6">
+              <h3 className="font-bold text-lg text-slate-800">Pengaturan Sekolah, Guru, Kunci & Soal Esai</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="text-xs font-semibold text-slate-600 block mb-1">Nama Sekolah</label>
@@ -1239,6 +1407,7 @@ export default function App() {
                 </div>
               </div>
             </div>
+          </div>
 
             <div className="pt-4 flex gap-4">
               <button onClick={() => {
